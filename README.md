@@ -229,9 +229,4 @@ to check cache you use for example `salt-run cache.fecth ext_pillar/bitwarden/ma
 
 In order to ensure pillar is re-computed you can do `salt-run cache.flush ext_pillar/bitwarden`
 
----
-
-## Future Improvements
-
-* Avoid cache invalidation when Bitwarden data has not changed
-
+Or you can run `salt-call pillar.items pillar='{bitwarden:need_sync: true}'`
