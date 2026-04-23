@@ -93,7 +93,10 @@ def ext_pillar(minion_id, pillar, *args, **_kwargs):
         'CACHE_BANK': _kwargs.get('cache_bank', 'ext_pillar/bitwarden').strip('/'),
         'CACHE_TTL':  _kwargs.get('cache_ttl', 60 * 5),
     }
-
+    
+    # use "salt-call pillar.items pillar='{bitwarden:need_sync: true}'" to force sync
+    env['NEED_SYNC'] = pillar.get('bitwarden:need_sync') == True
+    
     minion_pillar: dict = build_minion_pillar_from_cache(
         minion_id=minion_id,
         env=env,
@@ -255,7 +258,8 @@ def build_minion_pillar_from_cache(minion_id: str, env: dict) -> dict:
     bank = env["CACHE_BANK"]
     ttl  = env["CACHE_TTL"]
     current_time = now()
-    skip_fetch = False
+    need_sync = env['NEED_SYNC']
+    can_fetch = True
     try:
         session_token  = CACHE.fetch(bank + '/master', 'session_token')
         last_sync_time = CACHE.fetch(bank + '/master', 'last_sync')
@@ -265,27 +269,34 @@ def build_minion_pillar_from_cache(minion_id: str, env: dict) -> dict:
     if (
         last_sync_time is None
         or not isinstance(last_sync_time, (int, float))
-        or last_sync_time + ttl < current_time
     ): # Flush CACHE if invalid time or too old
         CACHE.flush(bank + '/minion')
         CACHE.flush(bank + '/master', 'pillar')
-        skip_fetch = True
+        can_fetch = False
+    elif last_sync_time + ttl < current_time:
+        need_sync = True
 
     env["BW_SESSION"] = session_token
+    
     master_pillar = None
-    if not skip_fetch:
-        master_pillar = CACHE.fetch(bank + '/master', 'pillar')
-        master_pillar = PillarItems.from_cache(master_pillar) if master_pillar else None
-    if master_pillar is None:
-        # Build master_pillar and store it for next time
+    if can_fetch:
+        master_pillar:dict = CACHE.fetch(bank + '/master', 'pillar') # get empty dict, if not exist
+        master_pillar:PillarItems = PillarItems.from_cache(master_pillar) if master_pillar else None
+        
+    if master_pillar is None or need_sync:
+        cached_master_pillar = master_pillar
         master_pillar = build_master_pillar(env=env)
-        CACHE.store(bank + '/master', 'pillar', master_pillar.to_cache())
         CACHE.store(bank + '/master', 'last_sync', current_time)
-
+        # if master pillar == Cached one, we don't need to flush and recompute cache
+        if master_pillar != cached_master_pillar:
+            CACHE.flush(bank + '/minion')
+            CACHE.flush(bank + '/master', 'pillar')
+            CACHE.store(bank + '/master', 'pillar', master_pillar.to_cache())
+        
     minion_pillar = None
-    if not skip_fetch:
-        minion_pillar: dict = CACHE.fetch(bank + '/minion', minion_id)
-    if minion_pillar: return minion_pillar
+    if can_fetch and CACHE.contains(bank + '/minion', minion_id):
+        minion_pillar:dict = CACHE.fetch(bank + '/minion', minion_id)
+    if minion_pillar is not None: return minion_pillar
 
     # Build minion_pillar from master_pillar and store it for next time
     minion_pillar = build_minion_pillar(pillar_items=master_pillar, minion_id=minion_id, env=env)
@@ -322,7 +333,7 @@ def compute_when(when_expr: list[tuple[str, str]], context: dict[str, Any]) -> b
             )
             continue
 
-        values = [v.strip() for v in value.split(",")]
+        values = [v.strip() for v in value.split(',')]
         if len(values) == 1:
             groups[-1].append( lambda ctx, k=key, v=values[0]: ctx.get(k) == v )
         else: # list handling
