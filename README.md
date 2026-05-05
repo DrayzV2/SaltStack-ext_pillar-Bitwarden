@@ -49,6 +49,31 @@ Then the resulting pillar will be:
 
 * The **password field** is used as the secret value
 * If no password is defined, the **notes field** is used instead, This allows storing **multiline secrets**
+* You can also use `!notes` or `!password` at the end of **username**
+* Finally you can use `!merge`, this will use **notes fields** and parse it as yaml
+
+!merge example
+
+```
+username = "pillar:MyMergedNote!merge"
+
+notes = """
+role: ABC
+appcode: APP
+number: 01
+"""
+```
+
+Then the resulting pillar will be:
+
+```yaml
+{{ pillar_base }}:
+  pillar:
+    MyMergedNote:
+      role: ABC
+      appcode: APP
+      number: 01
+```
 
 ---
 
@@ -59,6 +84,8 @@ Access to secrets can be restricted using custom fields in Bitwarden items.
 ### How it works
 
 * The `minion_id_parse_pattern` extracts groups from the minion ID
+  * The default one is : `(?P<appcode>.+?)(?P<role>.{3})(?P<number>\d{2})-(?P<env>.{3})\.(?P<domain>.+)`
+  * It parse minion_id like `appcoderol01-dev.mydomain.com` => appcode=appcode, role=rol, number=01, env=dev, domain=mydomain.com
 * These groups can be reused in Bitwarden item fields
 * You define conditions using custom fields on each secret
 * Multiple values are separated by `,` this works for any `group` or `minion_id` but not `pattern`
@@ -73,7 +100,6 @@ Access to secrets can be restricted using custom fields in Bitwarden items.
 | `pattern`   | Regex match                     |
 | `<group>`   | Match extracted group           |
 | `op`        | Logical operator (`and` / `or`) |
-
 
 
 ### Example
@@ -91,13 +117,15 @@ This evaluates as:
 (x = "1" AND y in ["test1","test2"]) OR (test = "true")
 ```
 
+> value are always strings
+
 ---
 
 ## Installation / Configuration (Salt Master)
 
 ### 1. Install the module
 
-Copy the file `bitwarden.py` and place it here:
+Copy the file `_pillar/bitwarden.py` and place it here:
 
 ```bash
 /srv/salt/_pillar/bitwarden.py
@@ -115,6 +143,24 @@ You should see:
 pillar.bitwarden
 ```
 
+Copy the file `_runner/bitwarden.py` and place it here:
+
+```bash
+/srv/salt/_runner/bitwarden.py
+```
+
+Then sync custom runners:
+
+```bash
+salt-run saltutil.sync_runners
+```
+
+You should see:
+
+```
+runners.bitwarden
+```
+
 ---
 
 ### 2. Configure ext_pillar
@@ -122,9 +168,7 @@ pillar.bitwarden
 Edit:
 
 ```
-/etc/salt/master
-or
-/etc/salt/master.d/*.conf
+/etc/salt/master.d/bitwarden.conf
 ```
 
 Add:
@@ -227,6 +271,11 @@ Contains:
 
 to check cache you use for example `salt-run cache.fecth ext_pillar/bitwarden/master pillar`
 
-In order to ensure pillar is re-computed you can do `salt-run cache.flush ext_pillar/bitwarden`
+To recompute cache you multiple option, you can do:
+* salt-run bitwarden.refresh_cache - Refresh cache with runner, that what ext_pillar does when needed
+  * This is the recommanded way as you see parsing errors
+* `salt-call pillar.items pillar='{bitwarden:need_sync: true}'` - Run pillar items, while requiring refresh
+* salt-run cache.flush ext_pillar/bitwarden - Completely remove existing cache
 
-Or you can run `salt-call pillar.items pillar='{bitwarden:need_sync: true}'`
+`salt-run bitwarden.refresh_cache` Can be use in a systemd service to automatically reload cache, to be usefull the service timer need to be lower than **cache_ttl**.
+Default **cache_ttl** is 5min, you can set it to 10 and run service with timer every 5min for example.
